@@ -164,7 +164,7 @@ class MPC():
         # Control actions for all the prediction steps
         self.U = ca.MX.sym("U", self.n_controls, self.N)
 
-        # This will contain initial state and reference state
+        # This will contain initial states and reference state
         self.P = ca.MX.sym("P", self.n_states + self.n_states)
 
         # This will contain the prediction of the states
@@ -206,18 +206,17 @@ class MPC():
 
 
 
-        # Constraint for starting point
-        self.g += [X[:, 0] - P[:self.n_states]]
-        self.lbg += g_min
-        self.ubg += g_max
+        # # Constraint for starting point
+        # self.g += [X[:, 0] - P[:self.n_states]]
+        # self.lbg += g_min
+        # self.ubg += g_max
 
         # for k in range()
-        # self.X[:, 0] = self.P[:self.n_states]
+
+        self.X[:, 0] = self.P[:self.n_states]
+
 
         # # starting point.
-
-
-
 
         for k in range(self.N):
 
@@ -225,23 +224,21 @@ class MPC():
             control = self.U[:,k]
 
             # Using x_dot for calculating next state
+
             x_dot =  myJacobian(control[:3]) @ control[3:]
 
             # TODO check this with amarildo
             # taking only the derivative which is for the position, not the orientation
+
             x_dot = x_dot[:3]
 
             # next state is calculated based on euler discritization
             next_state = state + self.dt * x_dot
+
             self.X[:,k+1] = next_state
+            print("khar")
 
-        opt_state_knowing_opt_control = ca.Function('opt_state', [self.U, self.P], [self.X]);
-
-
-
-
-
-
+        opt_state_knowing_opt_control = ca.Function('opt_state', [self.U, self.P, self.X], [self.X], ['u','p', 'x'],['x']);
 
 
 
@@ -263,6 +260,8 @@ class MPC():
             cost_u_k = f_cost_u(delta_u_k)
 
             self.mpc_obj = self.mpc_obj + cost_goal_k + cost_u_k
+
+
 
 
         # Making OPT variable a vertical vector
