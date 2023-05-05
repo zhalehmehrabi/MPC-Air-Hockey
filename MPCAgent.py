@@ -226,9 +226,9 @@ class MPC():
         g_max = [0 for _ in range(self.n_states)]
 
         # This will contain initial states and reference state
-        self.P = ca.SX.sym("P", self.n_states+(self.n_states+3)*self.N+self.n_states)
+        # self.P = ca.SX.sym("P", self.n_states+(self.n_states+3)*self.N+self.n_states)
 
-        self.P = ca.SX.sym("P", self.n_states+(self.n_states+3)*self.N+self.n_states)
+        self.P = ca.SX.sym("P", self.n_states + self.n_states)
 
         # This will contain the prediction of the states
         self.X = ca.SX.sym("X", self.n_states, self.N+1)
@@ -260,7 +260,7 @@ class MPC():
             # cost for tracking the goal position
             cost_goal_k, cost_gap_k = 0, 0
 
-            delta_s_k = (self.X[:, k + 1] - self.P[self.n_states + (self.n_states + 3) * self.N:])
+            delta_s_k = (self.X[:, k + 1] - self.P[self.n_states:])
             cost_goal_k = f_cost_goal(delta_s_k)
 
             # penalizing the use of control actions
@@ -328,7 +328,9 @@ class MPC():
             sol_x0[self.n_states + self.n_controls:])
 
         #
+
         x0_array = np.reshape(sol_x0[:-self.n_states], newshape=(-1, self.n_states + self.n_controls))
+        x0_array = x0_array[:3,:]
 
         # return optimal action, and a sequence of predicted optimal trajectory.
         return opt_u, x0_array

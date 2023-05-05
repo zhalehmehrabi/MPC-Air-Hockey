@@ -3,6 +3,10 @@ from air_hockey_challenge.utils.kinematics import forward_kinematics, inverse_ki
 import casadi as ca
 import numpy as np
 from air_hockey_agent.MPCAgent import MPC
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+
 
 def build_agent(env_info, **kwargs):
     """
@@ -26,24 +30,28 @@ class MyAgent(AgentBase):
         self.hold_position = None
         self.horizon = 20
         self.MPC = MPC(self.env_info, self.horizon)
+        self.actualx = []
+        self.actualy = []
 
+        self.mpcx = []
+        self.mpcy = []
 
     def reset(self):
         self.new_start = True
         self.hold_position = None
+        self.actualx = np.array([])
+        self.actualy = np.array([])
+
 
     def draw_action(self, observation):
+
         ee_pos = self.get_ee_pose(observation)[0].tolist()
         goal = self.get_puck_pos(observation)
 
-
-        ref_traj = self.generate_line_points(ee_pos,goal,self.horizon* 2 + 2).tolist()
+        ref_traj = ee_pos + goal.tolist()
         action, x0_array = self.MPC.solve(ref_traj)
 
         action = self.reshape_pos_vel_array(action)
-
-
-
 
         return action
 
