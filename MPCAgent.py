@@ -47,12 +47,14 @@ class MPC():
         # Number of control actions is the number of joints multiplied by number of control action per joint
         self.n_controls = n_control_action_per_joint * self.n_joints
 
+        self.n_controls_pos = self.n_joints
+        self.n_controls_vel = self.n_joints
         """
         Robots joints constraints
         """
 
         # desired height of the end-effector
-        self.ee_desired_height = self.env_info["robot"]["ee_desired_height"]
+        self.ee_desired_height = [self.env_info["robot"]["ee_desired_height"]]
 
         # The joint position and velocity limits for constraint computation is 95% of the actual limits
         constraint_computation_radio = 0.95
@@ -81,63 +83,104 @@ class MPC():
         self.robot_model = copy.deepcopy(self.env_info['robot']['robot_model'])
         self.robot_data = copy.deepcopy(self.env_info['robot']['robot_data'])
 
+        self.robot_link = [0.55, 0.44, 0.44]
+
+        # TODO check with amarildo
+        # places that are ok to go for the EE
+        self.table_x_lower = [- self.table_length / 2]
+        self.table_x_upper = [0]
+
+        self.table_y_lower = [-self.table_width / 2]
+        self.table_y_upper = [self.table_width / 2]
+
+
+
         self.building_optimizer()
 
     def building_optimizer(self):
         """
         Penalization weight
         """
-
         # cost matrix for the reference tracking
         self.Q = np.diag([100, 100, 100]) # x, y, z of ee position
 
-        # cost matrix for the action
-        self.R = np.diag([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # pos and velocity of three joints
+        # cost matrix for the change in position to have smooth transition
+        self.R = np.diag([0.1, 0.1, 0.1])  # pos and velocity of three joints
 
+        # for penalizing the usage of control actions
+        self.O = np.diag([1, 1, 1])
         """
         initial state and control action
         """
 
         # initial state, which is the initial position of end-effector
-        self.initial_state = forward_kinematics(self.robot_model, self.robot_data, self.initial_robot_pos)[0]
+        self.initial_state = (forward_kinematics(self.robot_model, self.robot_data, self.initial_robot_pos)[0]).tolist()
 
         # initial control action
-        self.initial_control_actions = np.concatenate([self.initial_robot_pos, self.initial_robot_vel])
+        self.initial_control_actions = np.concatenate([self.initial_robot_pos, self.initial_robot_vel]).tolist()
 
 
         # # # # # # # # # # # # # # # # # # #
         # ---------- Input States -----------
         # # # # # # # # # # # # # # # # # # #
 
-        eex, eey, eez = ca.SX.sym('eex'), ca.SX.sym('eey'), ca.SX.sym('eez')
+        px, py, pz = ca.SX.sym('px'), ca.SX.sym('py'), ca.SX.sym('pz')
+        #
+
         # -- conctenated vector
-        self._x = ca.vertcat(eex, eey, eez)
+        _x = ca.vertcat(px, py, pz)
 
         # # # # # # # # # # # # # # # # # # #
         # --------- Control Command ------------
         # # # # # # # # # # # # # # # # # # #
 
-        wpos1, wpos2, wpos3, wvel1, wvel2, wvel3 = ca.MX.sym('wpos1'),ca.MX.sym('wpos2'),ca.MX.sym('wpos3'), \
-                                                   ca.MX.sym('wvel1'), ca.MX.sym('wvel2'), ca.MX.sym('wvel3')
+        wpos1, wpos2, wpos3 = ca.SX.sym('pos1'), ca.SX.sym('pos2'), ca.SX.sym('pos3')
+        wvel1, wvel2, wvel3 = ca.SX.sym('vel1'), ca.SX.sym('vel2'), ca.SX.sym('vel3')
 
         # -- conctenated vector
-        self._u = ca.vertcat(wpos1, wpos2, wpos3, wvel1, wvel2, wvel3)
+        _u = ca.vertcat(wpos1, wpos2, wpos3, wvel1, wvel2, wvel3)
 
         # # # # # # # # # # # # # # # # # # #
         # --------- System Dynamics ---------
         # # # # # # # # # # # # # # # # # # #
 
+        a1 = self.robot_link[0]
+        a2 = self.robot_link[1]
+        a3 = self.robot_link[2]
 
-        """ 
-        # Based on their paper, space velocities, x_dot is computed like this: x_dot = Jacobian(joint pos)* joint vel        
-        """
+        j11 = (-a2 * ca.sin(wpos1 + wpos2)) - (a1 * ca.sin(wpos1)) - (a3 * ca.sin(wpos1 + wpos2 + wpos3))
+        j12 = (-a2 * ca.sin(wpos1 + wpos2)) - (a3 * ca.sin(wpos1 + wpos2 + wpos3))
+        j13 = -a3 * ca.sin(wpos1 + wpos2 + wpos3)
 
-        # Define the Jacobian function from Kinematics as a CasADi expression
+        j21 = (a2 * ca.cos(wpos1 + wpos2)) + (a1 * ca.cos(wpos1)) + (a3 * ca.cos(wpos1 + wpos2 + wpos3))
+        j22 = (a2 * ca.cos(wpos1 + wpos2)) + (a3 * ca.cos(wpos1 + wpos2 + wpos3))
+        j23 = a3 * ca.cos(wpos1 + wpos2 + wpos3)
 
-        myJacobian = MyJacobian(mjmodel=self.robot_model, mjdata=self.robot_data)
+        j1 = ca.horzcat(j11,j12,j13)
+        j2 = ca.horzcat(j21,j22,j23)
 
-        # usage is like below
-        # self.x_dot =  myJacobian(self._u[:3]) @ self._u[3:]
+        # this is because planner robot cannot control the height
+        zero = 0
+
+        j = ca.vertcat(j1,j2)
+
+        x_dot = j @ _u[3:]
+
+        x_dot = ca.vertcat(x_dot, zero)
+
+        # self.pokh = ca.Function('pokh', [_u], [x_dot], ['u'], ['ode'])
+
+        # F = self.sys_dynamics(self._dt)
+        # fMap = F.map(self._N, "openmp")
+        #
+
+        # todo change this to RK4 method
+        x_next = _x + self.dt * x_dot
+
+        self.f = ca.Function('f', [_u, _x], [x_next], ['_u', '_x'], ['x_next'])
+        # self.f = self.fff.expand()
+
+        # next_state_creator = self.sys_dynamics(self.dt)
 
 
         # # # # # # # # # # # # # # #
@@ -146,48 +189,36 @@ class MPC():
 
         # placeholder for the quadratic cost function
         Delta_s = ca.SX.sym("Delta_s", self.n_states)
-        Delta_u = ca.SX.sym("Delta_u", self.n_controls)
+        Delta_u = ca.SX.sym("Delta_u", self.n_controls_pos)
+        Delta_v = ca.SX.sym("Delta_u", self.n_controls_vel)
 
         #
         cost_goal = Delta_s.T @ self.Q @ Delta_s
         cost_u = Delta_u.T @ self.R @ Delta_u
+        cost_v = Delta_v.T @ self.O @ Delta_v
 
         #
         f_cost_goal = ca.Function('cost_goal', [Delta_s], [cost_goal])
         f_cost_u = ca.Function('cost_u', [Delta_u], [cost_u])
+        f_cost_v = ca.Function('cost_v', [Delta_v], [cost_v])
 
         #
         # # # # # # # # # # # # # # # # # # # #
         # # ---- Non-linear Optimization -----
         # # # # # # # # # # # # # # # # # # # #
 
-        # Control actions for all the prediction steps
-        self.U = ca.MX.sym("U", self.n_controls, self.N)
+        self.nlp_w = []       # nlp variables
+        self.nlp_w0 = []      # initial guess of nlp variables
+        self.lbw = []         # lower bound of the variables, lbw <= nlp_x
+        self.ubw = []         # upper bound of the variables, nlp_x <= ubw
 
-        # This will contain initial states and reference state
-        self.P = ca.MX.sym("P", self.n_states + self.n_states)
 
-        # This will contain the prediction of the states
-        self.X = ca.MX.sym("X", self.n_states, self.N+1)
-
-        self.g = []       # constraint functions
 
         # TODO Adding table contraints to the system and their limits
-
-        # for i in range(self.N):
-        #     self.g =
         self.lbg = []         # lower bound of constrait functions, lbg < g
         self.ubg = []         # upper bound of constrait functions, g < ubg
 
         # self.OPT_variables = ca.reshape(U,(1, self.n_controls * self.N))   # nlp variables
-        self.OPT_variables = []
-        self.OPT_variables_initial = self.initial_control_actions.tolist()
-        # initial guess of nlp variables
-        self.lbx = []         # lower bound of the variables, lbw <= nlp_x
-        self.ubx = []         # upper bound of the variables, nlp_x <= ubw
-
-
-
 
         u_min = np.concatenate([self.lower_limit_joint_pos, self.lower_limit_joint_vel]).tolist()
         u_max = np.concatenate([self.upper_limit_joint_pos, self.upper_limit_joint_vel]).tolist()
@@ -195,247 +226,189 @@ class MPC():
         # here I have to put the contraints for table
 
         # TODO
-        x_bound = ca.inf
-        x_min = [-x_bound for _ in range(self.n_states)]
-        x_max = [+x_bound for _ in range(self.n_states)]
+        # x_bound = ca.inf
+        # x_min = [-x_bound for _ in range(self.n_states)]
+        # x_max = [+x_bound for _ in range(self.n_states)]
 
+        x_min = [0, -0.5, 0.1]
+        x_max = [0.9, 0.5, 0.1]
 
         g_min = [0 for _ in range(self.n_states)]
         g_max = [0 for _ in range(self.n_states)]
 
+        # This will contain initial states and reference state
+        # self.P = ca.SX.sym("P", self.n_states+(self.n_states+3)*self.N+self.n_states)
 
+        self.P = ca.SX.sym("P", self.n_states + self.n_states)
 
+        # This will contain the prediction of the states
+        self.X = ca.SX.sym("X", self.n_states, self.N+1)
 
-        # # Constraint for starting point
-        # self.g += [X[:, 0] - P[:self.n_states]]
-        # self.lbg += g_min
-        # self.ubg += g_max
+        # Control actions for all the prediction steps
+        self.U = ca.SX.sym("U", self.n_controls, self.N)
 
-        # for k in range()
+        X_next = self.f(self.U,self.X[:,0])
 
-        self.X[:, 0] = self.P[:self.n_states]
-
-
-        # # starting point.
+        # initial state
+        self.X[:, 0] = self.P[: 3]
 
         for k in range(self.N):
+            st = self.X[:, k]
+            con = self.U[:, k]
+            st_next = self.f(con, st);
+            self.X[:, k + 1] = st_next;
 
-            state = self.X[:,k]
-            control = self.U[:,k]
+        self.ff = ca.Function('ff', [self.U, self.P], [self.X]);
 
-            # Using x_dot for calculating next state
+        obj = 0
+        # TODO moshkel in bi pedar G e k meghdar nemigire
+        g = []
 
-            x_dot =  myJacobian(control[:3]) @ control[3:]
-
-            # TODO check this with amarildo
-            # taking only the derivative which is for the position, not the orientation
-
-            x_dot = x_dot[:3]
-
-            # next state is calculated based on euler discritization
-            next_state = state + self.dt * x_dot
-
-            self.X[:,k+1] = next_state
-            print("khar")
-
-        opt_state_knowing_opt_control = ca.Function('opt_state', [self.U, self.P, self.X], [self.X], ['u','p', 'x'],['x']);
-
-
-
-        self.mpc_obj = 0      # objective
-
-        # Computing cost function
         for k in range(self.N):
-            cost_goal_k = 0
-            delta_s_k = (self.X[:, k] - self.P[self.n_states:])
+            cost_goal_k, cost_gap_k = 0, 0
+            delta_s_k = (self.X[:, k + 1] - self.P[self.n_states:])
             cost_goal_k = f_cost_goal(delta_s_k)
 
             # penalizing the use of control actions
             if k == 0:
-                delta_u_k = self.U[:, k] - self.initial_control_actions
+                delta_u_k = self.U[:3, k] - self.initial_control_actions[:3]
             else:
                 # TODO we can add acceleration limit here
-                delta_u_k = self.U[:, k] - self.U[:, k-1]
+                delta_u_k = self.U[:3, k] - self.U[:3, k - 1]
 
             cost_u_k = f_cost_u(delta_u_k)
 
-            self.mpc_obj = self.mpc_obj + cost_goal_k + cost_u_k
+            # penalizing the use of velocity
+            delta_v_k = self.U[3:, k]
+            cost_v = f_cost_v(delta_v_k)
 
+            obj = obj + cost_goal_k + cost_u_k + cost_v
 
-
-
-        # Making OPT variable a vertical vector
         # TODO constraints of the table is not coded yet
-        self.OPT_variables = ca.reshape(self.U, self.n_controls * self.N, 1)
+
+        # # starting point.
+        for k in range(self.N + 1):
+            g = ca.vertcat(g,self.X[0,k])
+            self.lbg += self.table_x_lower
+            self.ubg += self.table_x_upper
+
+            g = ca.vertcat(g, self.X[1, k])
+            self.lbg += self.table_y_lower
+            self.ubg += self.table_y_upper
+
+            # Todo they said that there is a tolerance for the height
+            g = ca.vertcat(g, self.X[2, k])
+            self.lbg += self.ee_desired_height
+            self.ubg += self.ee_desired_height
+
+
+        OPT_variables = ca.reshape(self.U, self.n_controls * self.N, 1);
 
         for k in range(self.N):
-            self.lbx += u_min
-            self.ubx += u_max
+            #
+            self.lbw += u_min
+            self.ubw += u_max
 
-
-
-        nlp_prob = {'f': self.mpc_obj,
-                    'x': self.OPT_variables,
-                    'g': self.g,
-                    'p': self.P}
+        # nlp objective
+        nlp_dict = {'f': obj,
+                    'x': OPT_variables,
+                    'p': self.P,
+                    'g': g}
 
 
         ipopt_options = {
-            'verbose': False,
+            'verbose': False, \
             "ipopt.tol": 1e-4,
             "ipopt.acceptable_tol": 1e-4,
             "ipopt.max_iter": 100,
             "ipopt.warm_start_init_point": "yes",
             "ipopt.print_level": 0,
-            "print_time": False
+            "print_time": False,
+            'expand': True
         }
 
-        solver = ca.nlpsol('solver', 'ipopt', nlp_prob, ipopt_options);
+        self.solver = ca.nlpsol("solver", "ipopt", nlp_dict, ipopt_options)
 
-        args = {
-            "lbx": self.lbx,
-            "ubx": self.ubx,
-            "lbg": self.lbg,
-            "ubg": self.ubg
-        }
+        # TODO check the timer
 
-        t0 = 0
-        x0 = self.initial_state
-        xs = [2, 2, 0.1]  # reference
+    def solve(self, ref_state, u0):
+        # # # # # # # # # # # # # # # #
+        # -------- solve NLP ---------
+        # # # # # # # # # # # # # # # #
+        #
 
-        xx = []
-        tt = []
-        xx.append(x0)
-        tt.append(t0)
+        p = ref_state
 
-        u0 = np.zeros((self.n_controls, self.N))
+        # sol = self.solver
+        self.sol = self.solver(
+        x0=u0.reshape(self.n_controls * self.N,1),
+        lbx=self.lbw,
+        ubx=self.ubw,
+        p=p,
+        lbg=self.lbg,
+        ubg=self.ubg)
 
-        mpciter = 0;
-        xx1 = [];
-        u_cl = [];
+        u = self.sol['x'].full().reshape(self.n_controls, self.N)
+        # compute optimal solution trajectory
 
-        # if the agent is near enough or # TODO the time reaches
-        while (np.linalg.norm((x0 - xs), 2) > 1e-2):
-            # set the values of the parameters vector
-            args["p"] = [*x0, *xs]
-            args["x0"] = np.reshape(u0, (1, self.n_controls * self.N))
-            sol = solver(
-                x0=args["x0"],
-                lbx=args["lbx"],
-                ubx=args["ubx"],
-                p=args["p"],
-                lbg=args["lbg"],
-                ubg=args["ubg"])
-            u_pred = np.reshape(sol.full(), (self.N, self.n_controls))
+        x_hat = self.ff(u,p)
 
+
+        # history = np.stack(xx, axis=2)
+        # sol_x0 = self.sol['x'].full()
+        # opt_u = sol_x0[self.n_states:self.n_states + self.n_controls]
+
+        opt_u = u[:,0].reshape(1, self.n_controls)
+
+        # return optimal action, and a sequence of predicted optimal trajectory.
+        return opt_u, x_hat
+
+
+    def append_to_history(self, xx,x0):
+        # add my_list to history as a new column
+        r = np.array(x0).reshape(3, 1)
+        # add another list to history
+        xx = np.hstack([xx, r])
+        return xx
+
+
+
+
+
+    # Todo use this RK4 for generating next state
+    def sys_dynamics(self, dt):
+        M = 4  # refinement
+        DT = dt / M
+        X0 = ca.SX.sym("X", self.n_states)
+        U = ca.SX.sym("U", self.n_controls)
+
+        # #
+        X = X0
+        for _ in range(M):
+            # --------- RK4------------
+            # K1[:3] is because the returned object is pos + orientation
+            # TODO check this with amarildo
+            # taking only the derivative which is for the position, not the orientation
+
+            k1 = DT * self.f(U, X)
+            k2 = DT * self.f(U, X + 0.5 * k1[:3])
+            k3 = DT * self.f(U, X + 0.5 * k2[:3])
+            k4 = DT * self.f(U, X + k3[:3])
+            #
+            X = X + (k1[:3] + 2 * k2[:3] + 2 * k3[:3] + k4[:3]) / 6
+            # Fold
+        F = ca.Function('F', [X0, U], [X])
+        return F
 
             # reference must be in xyz format
     # def draw_action(self, , reference):
     #
 
 
-    #unchecked
-    def sys_dynamics(self, robot_model, robot_data, joint_pos, joint_vel):
-        return jacobian(robot_model, robot_data, joint_pos) * joint_vel
-
-    def ff_function(self, U, P):
-        X = 0
-        return X
 
 
-if __name__ == '__main__':
-    m = MPC
-
-# Forward and inverse kinematics functions
-def fk(q):
-    # Your forward kinematics implementation
-    pass
 
 
-def ik(x_desired):
-    # Your inverse kinematics implementation
-    pass
-
-
-# Define the system dynamics
-def robot_dynamics(x, u):
-    q = x[:n_joints]
-    qdot = x[n_joints:]
-    q_next = q + dt * qdot
-    qdot_next = qdot + dt * u
-    x_next = ca.vertcat(q_next, qdot_next)
-    return x_next
-
-
-# Define the cost function
-def cost_function(x, u, x_ref, q_ref):
-    x_ee = fk(x[:n_joints])
-    cost = ca.mtimes((x_ee - x_ref).T, (x_ee - x_ref)) + ca.mtimes((x[:n_joints] - q_ref).T, (x[:n_joints] - q_ref))
-    return cost
-
-def optimizationInit(envinfo):
-    # MPC setup
-
-    x = ca.MX.sym('x', n_states)
-    u = ca.MX.sym('u', n_controls)
-    x_ref = ca.MX.sym('x_ref', 2)
-    q_ref = ca.MX.sym('q_ref', n_joints)
-    x_next = robot_dynamics(x, u)
-    L = cost_function(x, u, x_ref, q_ref)
-    F = ca.Function('F', [x, u, x_ref, q_ref], [x_next, L], ['x', 'u', 'x_ref', 'q_ref'], ['x_next', 'L'])
-
-    # Optimization problem
-    opti = ca.Opti()
-    X = opti.variable(n_states, N + 1)
-    U = opti.variable(n_controls, N)
-    p = opti.parameter(2)
-    Q_ref = opti.parameter(n_joints, N + 1)
-
-    # Objective function
-    objective = 0
-    for i in range(N):
-        x_next, cost = F(X[:, i], U[:, i], p, Q_ref[:, i])
-        opti.subject_to(X[:, i + 1] == x_next)
-        objective += cost
-
-    opti.minimize(objective)
-
-    # Constraints
-    for i in range(N + 1):
-        opti.subject_to(opti.bounded(-np.pi, X[0, i], np.pi))  # Joint 1 angle limits
-        opti.subject_to(opti.bounded(-np.pi, X[1, i], np.pi))  # Joint 2 angle limits
-        opti.subject_to(opti.bounded(-np.pi, X[2, i], np.pi))  # Joint 3 angle limits
-
-    for i in range(N):
-        opti.subject_to(opti.bounded(-2 * np.pi, U[0, i], 2 * np.pi))  # Joint 1 velocity limits
-        opti.subject_to(opti.bounded(-2 * np.pi, U[1, i], 2 * np.pi))  # Joint 2 velocity limits
-        opti.subject_to(opti.bounded(-2 * np.pi, U[2, i], 2 * np.pi))  # Joint 3 velocity limits
-
-    opti.subject_to(X[:, 0] == X[:, 1])  # Initial state constraint
-
-    # Solver setup
-    opti.solver('ipopt')
-    solver = opti.to_function('solver', [p, X[:, 0], Q_ref], [U[:, 0]], ['p', 'x0', 'Q_ref'], ['u0'])
-
-    # Simulation
-    x0 = np.zeros(n_states)  # Initial state
-    x_desired = np.array([0.5, 0.5])  # Desired end-effector position
-    q_desired = ik(x_desired)  # Desired joint angles
-
-    Q_ref_sim = np.tile(q_desired, (N + 1, 1)).T
-
-    for t in range(int(T / dt)):
-        # Update the reference
-        x_current = x0[:n_joints]
-        x_ref = x_desired
-        u0 = solver(x_ref, x0, Q_ref_sim)
-        x_next = robot_dynamics(x0, u0)
-        x0 = x_next.full().flatten()
-
-        # Do something with the control output, e.g., send itto the robot
-        # send_control_to_robot(u0)
-
-    # The code above sets up the MPC optimization problem, solves it at each time step, and updates the initial state for the next iteration. In a real application, you would replace the "send_control_to_robot" placeholder with the actual function to send the control commands to your robot. Additionally, you would need to update the initial state `x0` based on the actual robot state rather than just the simulated state.
 
 
 class MyJacobian(casadi.Callback):
@@ -446,22 +419,25 @@ class MyJacobian(casadi.Callback):
         self.construct("jacobian", {"enable_fd": True})
 
     # Number of inputs and outputs
-    def get_n_in(self): return 1
+    def get_n_in(self): return 2
 
     def get_n_out(self): return 1
 
     def get_sparsity_in(self, i):
         if i==0:
             return ca.Sparsity.dense(3,1)
+        if i==1:
+            return ca.Sparsity.dense(3,1)
     def get_sparsity_out(self, i):
         if i==0:
-            return ca.Sparsity.dense(6, 3)
+            return ca.Sparsity.dense(6, 1)
     # Initialize the object
     def init(self):
         print('initializing object')
     # Evaluate numerically
     def eval(self, arg):
-        x = arg[0]
-        f = jacobian(self.mjmodel, self.mjdata, x)
+        pos = arg[0]
+        vel = arg[1]
+        f = jacobian(self.mjmodel, self.mjdata, pos) @ vel
         return [f]
 
