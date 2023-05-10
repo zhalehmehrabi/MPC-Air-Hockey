@@ -1,5 +1,6 @@
 from air_hockey_challenge.framework import AgentBase
 from air_hockey_challenge.utils.kinematics import forward_kinematics, inverse_kinematics, jacobian
+from air_hockey_challenge.utils.transformations import robot_to_world, world_to_robot
 import casadi as ca
 import numpy as np
 from air_hockey_agent.MPCAgent import MPC
@@ -44,7 +45,7 @@ class MyAgent(AgentBase):
         self.time = []
 
         # self.last_action = np.zeros((1,self.MPC.n_controls))
-        self.last_action = np.array(self.MPC.initial_control_actions).reshape(1, self.MPC.n_controls)
+        # self.last_action = np.array(self.MPC.initial_control_actions).reshape(1, self.MPC.n_controls)
 
         self.t = 0
 
@@ -68,42 +69,28 @@ class MyAgent(AgentBase):
         self.history_of_vel3 = []
         self.time = []
         self.sent = False
-        self.history_of_pos1.append(self.MPC.initial_control_actions[0])
-        self.history_of_pos2.append(self.MPC.initial_control_actions[1])
-        self.history_of_pos3.append(self.MPC.initial_control_actions[2])
-        self.history_of_vel1.append(self.MPC.initial_control_actions[3])
-        self.history_of_vel2.append(self.MPC.initial_control_actions[4])
-        self.history_of_vel3.append(self.MPC.initial_control_actions[5])
+
         self.time.append(self.t)
 
     def draw_action(self, observation):
 
+        ee_pos, _ = self.get_ee_pose(observation)
+        ee_pos_for_MPC = robot_to_world(self.MPC.env_info["robot"]["base_frame"][0], ee_pos)[0]
+        print("initial_state = ", ee_pos_for_MPC)
+        # Send result back to socket
+        result_str = ' '.join(str(x) for x in ee_pos_for_MPC.flatten())
+        self.conn.sendall(result_str.encode())
 
-        if self.sent:
-            result_array = self.get_ee_pose(observation)[0] + np.array(self.MPC.robot_base_pos)
-            print("next_state = ", result_array)
-            # Send result back to socket
-            result_str = ' '.join(str(x) for x in result_array.flatten())
-            self.conn.sendall(result_str.encode())
-            self.sent = False
-        # Initial pos of EE
-
-        ee_pos = (self.get_ee_pose(observation)[0] + np.array(self.MPC.robot_base_pos)).tolist()
-        # Reference pos of EE
-        # goal = self.get_puck_pos(observation)
-        goal = np.array([-0.8, 0, 0])
 
         data = self.conn.recv(1024)
 
-        # Convert message to array of shape 1x3
         data_str = data.decode('utf-8')
         data_list = [float(x) for x in data_str.split()]
-        data_array = np.array(data_list).reshape((2, 3))
 
-        print(data_array)
-        self.sent = True
+        # data_array = np.array(data_list).reshape((2, 3))
+        data_array = np.array(data_list)
 
-
+        data_array = self._action_transform(data_array, observation)
         """
         checking JACOBIANS
         """
@@ -115,72 +102,9 @@ class MyAgent(AgentBase):
 
 
 
-        # ref_traj = ee_pos + goal.tolist()
-        # action, x0_array = self.MPC.solve(ref_traj, np.tile(self.last_action,(self.MPC.N, 1)))
-        #
-        #
-
-        #
-        # self.last_action = action
-        # self.t += 1
-        #
-        # self.history_of_pos1.append(action[0,0])
-        # self.history_of_pos2.append(action[0,1])
-        # self.history_of_pos3.append(action[0,2])
-        # self.history_of_vel1.append(action[0,3])
-        # self.history_of_vel2.append(action[0,4])
-        # self.history_of_vel3.append(action[0,5])
-        # self.time.append(self.t)
-        #
-        # # create six scatter plots
-        # fig, axs = plt.subplots(2, 3, figsize=(12, 8))
-        #
-        # axs[0, 0].scatter(self.time, self.history_of_pos1)
-        # axs[0, 0].set_title('POS 1')
-        #
-        # axs[0, 1].scatter(self.time, self.history_of_pos2)
-        # axs[0, 1].set_title('POS 2')
-        #
-        # axs[0, 2].scatter(self.time, self.history_of_pos3)
-        # axs[0, 2].set_title('POS 3')
-        #
-        # axs[1, 0].scatter(self.time, self.history_of_vel1)
-        # axs[1, 0].set_title('VEL 1')
-        #
-        # axs[1, 1].scatter(self.time, self.history_of_vel2)
-        # axs[1, 1].set_title('VEL 2')
-        #
-        # axs[1, 2].scatter(self.time, self.history_of_vel3)
-        # axs[1, 2].set_title('VEL 3')
-        #
-        # plt.show()
         # return self.reshape_pos_vel_array(action)
         return data_array
-    def submit_to_history(self, trajectory):
-        self.t += 1
 
-
-        xx = []
-
-        t = []
-        # add my_list to history as a new row
-
-        r = np.array(x0).reshape(3, 1)
-        # add another list to history
-        xx.append(r)
-
-        # xx = np.hstack([xx, r])
-
-        t.append(t0)
-
-        u0 = np.zeros((self.N,self.n_controls))
-
-        # maximum simulation time
-        sim_tim = 20
-
-        mpciter = 0
-        xx1 = []
-        u_cl = []
     def reshape_pos_vel_array(self, arr):
         """
         Reshapes an input array of shape (6,) containing position and velocity vectors into a 2D array of shape (3, 2).
@@ -198,21 +122,18 @@ class MyAgent(AgentBase):
 
         return pos_vel
 
-class DummyAgent(AgentBase):
-    def __init__(self, env_info, **kwargs):
-        super().__init__(env_info, **kwargs)
-        self.new_start = True
-        self.hold_position = None
+    def _action_transform(self, action, obs):
 
-    def reset(self):
-        self.new_start = True
-        self.hold_position = None
+        joint_pos = self.get_joint_pos(obs)
+        joint_vel = self.get_joint_vel(obs)
 
-    def draw_action(self, observation):
-        if self.new_start:
-            self.new_start = False
-            self.hold_position = self.get_joint_pos(observation)
+        command = world_to_robot(self.MPC.env_info["robot"]["base_frame"][0], action)[0]
+        success, new_joint_pos = inverse_kinematics(self.robot_model, self.robot_data, command)
+        joint_velocities = (new_joint_pos - self.get_joint_pos(obs)) / self.MPC.env_info['dt']
 
-        velocity = np.zeros_like(self.hold_position)
-        action = np.vstack([self.hold_position, velocity])
+        # if not success:
+        #     self._fail_count += 1
+        #     # new_joint_pos = joint_pos
+
+        action = np.vstack([new_joint_pos, joint_velocities])
         return action

@@ -85,6 +85,9 @@ class MPC():
 
         self.robot_link = [0.55, 0.44, 0.44]
 
+        self.robot_base_pos = [-1.51,0,-0.1]
+
+
         # TODO check with amarildo
         # places that are ok to go for the EE
         self.table_x_lower = [- self.table_length / 2]
@@ -261,12 +264,14 @@ class MPC():
         self.ff = ca.Function('ff', [self.U, self.P], [self.X]);
 
         obj = 0
-        # TODO moshkel in bi pedar G e k meghdar nemigire
+
         g = []
 
         for k in range(self.N):
             cost_goal_k, cost_gap_k = 0, 0
-            delta_s_k = (self.X[:, k + 1] - self.P[self.n_states:])
+            # delta_s_k = (self.X[:, k + 1] - self.P[self.n_states:])
+
+            delta_s_k = (self.X[:, k] - self.P[self.n_states:])
             cost_goal_k = f_cost_goal(delta_s_k)
 
             # penalizing the use of control actions
