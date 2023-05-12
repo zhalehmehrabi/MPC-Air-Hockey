@@ -1,11 +1,17 @@
 from air_hockey_challenge.framework import AgentBase
 from air_hockey_challenge.utils.kinematics import forward_kinematics, inverse_kinematics, jacobian
+from air_hockey_challenge.utils.transformations import robot_to_world, world_to_robot
 import casadi as ca
 import numpy as np
 from air_hockey_agent.MPCAgent import MPC
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import socket
+from air_hockey_agent.mpc import MPCHigh
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle
 
 
 def build_agent(env_info, **kwargs):
@@ -28,191 +34,226 @@ class MyAgent(AgentBase):
     def __init__(self, env_info, **kwargs):
         super().__init__(env_info, **kwargs)
         self.horizon = 20
-        self.MPC = MPC(self.env_info, self.horizon)
-        self.history_predicted = []
+        self.MPC = MPCHigh(self.env_info, self.horizon)
+
+        # for visualization
+        self.t0 = 0
+        self.xx = []
+        self.xx1 = []
+        self.u_cl = []
+        self.last_action = self.MPC._quad_u0
 
 
-
-        self.actual_pos = []
-
-        self.history_of_pos1 = []
-        self.history_of_pos2 = []
-        self.history_of_pos3 = []
-        self.history_of_vel1 = []
-        self.history_of_vel2 = []
-        self.history_of_vel3 = []
-        self.time = []
-
-        # self.last_action = np.zeros((1,self.MPC.n_controls))
-        self.last_action = np.array(self.MPC.initial_control_actions).reshape(1, self.MPC.n_controls)
-
-        self.t = 0
-
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.s.bind(('localhost', 8080))
-        print("waiting for connection")
-        self.s.listen(1)
-        self.conn, addr = self.s.accept()
-        print("conneceted")
-        self.sent = False
 
 
     def reset(self):
-        self.history = np.array([])
-        self.t = 0
-        self.history_of_pos1 = []
-        self.history_of_pos2 = []
-        self.history_of_pos3 = []
-        self.history_of_vel1 = []
-        self.history_of_vel2 = []
-        self.history_of_vel3 = []
-        self.time = []
-        self.sent = False
-        self.history_of_pos1.append(self.MPC.initial_control_actions[0])
-        self.history_of_pos2.append(self.MPC.initial_control_actions[1])
-        self.history_of_pos3.append(self.MPC.initial_control_actions[2])
-        self.history_of_vel1.append(self.MPC.initial_control_actions[3])
-        self.history_of_vel2.append(self.MPC.initial_control_actions[4])
-        self.history_of_vel3.append(self.MPC.initial_control_actions[5])
-        self.time.append(self.t)
-
+        self.t0 = 0
+        self.xx = []
+        self.xx1 = []
+        self.u_cl = []
     def draw_action(self, observation):
 
+        ee_pos, _ = self.get_ee_pose(observation)
+        ee_pos_for_MPC = (robot_to_world(self.MPC.env_info["robot"]["base_frame"][0], ee_pos)[0])[:2].tolist()
+        self.xs = [-0.8 , -0.3 ]
+        ref_traj = ee_pos_for_MPC + self.xs
+        # ref_traj = ee_pos + goal.tolist()
+        action, x0_array = self.MPC.solve(ref_traj)
 
-        if self.sent:
-            result_array = self.get_ee_pose(observation)[0] + np.array(self.MPC.robot_base_pos)
-            print("next_state = ", result_array)
-            # Send result back to socket
-            result_str = ' '.join(str(x) for x in result_array.flatten())
-            self.conn.sendall(result_str.encode())
-            self.sent = False
-        # Initial pos of EE
+        state_as_input = x0_array[1,:2]
+        command = np.concatenate([state_as_input, np.zeros(1)])
+        inverse = self._action_transform(command, observation)
 
-        ee_pos = (self.get_ee_pose(observation)[0] + np.array(self.MPC.robot_base_pos)).tolist()
-        # Reference pos of EE
-        # goal = self.get_puck_pos(observation)
-        goal = np.array([-0.8, 0, 0])
 
-        data = self.conn.recv(1024)
-
-        # Convert message to array of shape 1x3
-        data_str = data.decode('utf-8')
-        data_list = [float(x) for x in data_str.split()]
-        data_array = np.array(data_list).reshape((2, 3))
-
-        print(data_array)
-        self.sent = True
 
 
         """
         checking JACOBIANS
         """
-        # next_state_my = self.MPC.f(self.last_action[0,:], ee_pos)
-        #
-        # x_dot_muj = (jacobian(self.MPC.robot_model, self.robot_data, self.last_action[0,:3]) @ self.last_action[0,3:])[:3]
-        # next_state_muj = ee_pos + self.MPC.dt * x_dot_muj[:3]
 
+        x_dot_me = self.MPC.f(ee_pos_for_MPC, np.array(self.last_action))
 
+        x_dot_muj = (jacobian(self.MPC.robot_model, self.robot_data, self.last_action[:3]) @ self.last_action[3:])[:3]
 
+        self.last_action = action.reshape(6).tolist()
 
-        # ref_traj = ee_pos + goal.tolist()
-        # action, x0_array = self.MPC.solve(ref_traj, np.tile(self.last_action,(self.MPC.N, 1)))
-        #
-        #
+        pos = action[:3].reshape(1,3)
+        vel = action[3:].reshape(1,3)
 
-        #
-        # self.last_action = action
-        # self.t += 1
-        #
-        # self.history_of_pos1.append(action[0,0])
-        # self.history_of_pos2.append(action[0,1])
-        # self.history_of_pos3.append(action[0,2])
-        # self.history_of_vel1.append(action[0,3])
-        # self.history_of_vel2.append(action[0,4])
-        # self.history_of_vel3.append(action[0,5])
-        # self.time.append(self.t)
-        #
-        # # create six scatter plots
-        # fig, axs = plt.subplots(2, 3, figsize=(12, 8))
-        #
-        # axs[0, 0].scatter(self.time, self.history_of_pos1)
-        # axs[0, 0].set_title('POS 1')
-        #
-        # axs[0, 1].scatter(self.time, self.history_of_pos2)
-        # axs[0, 1].set_title('POS 2')
-        #
-        # axs[0, 2].scatter(self.time, self.history_of_pos3)
-        # axs[0, 2].set_title('POS 3')
-        #
-        # axs[1, 0].scatter(self.time, self.history_of_vel1)
-        # axs[1, 0].set_title('VEL 1')
-        #
-        # axs[1, 1].scatter(self.time, self.history_of_vel2)
-        # axs[1, 1].set_title('VEL 2')
-        #
-        # axs[1, 2].scatter(self.time, self.history_of_vel3)
-        # axs[1, 2].set_title('VEL 3')
-        #
-        # plt.show()
-        # return self.reshape_pos_vel_array(action)
-        return data_array
-    def submit_to_history(self, trajectory):
-        self.t += 1
-
-
-        xx = []
-
-        t = []
-        # add my_list to history as a new row
-
-        r = np.array(x0).reshape(3, 1)
-        # add another list to history
-        xx.append(r)
-
-        # xx = np.hstack([xx, r])
-
-        t.append(t0)
-
-        u0 = np.zeros((self.N,self.n_controls))
-
-        # maximum simulation time
-        sim_tim = 20
-
-        mpciter = 0
-        xx1 = []
-        u_cl = []
-    def reshape_pos_vel_array(self, arr):
+        action = np.vstack([pos, vel])
         """
-        Reshapes an input array of shape (6,) containing position and velocity vectors into a 2D array of shape (3, 2).
-        Parameters:
-        arr (numpy.ndarray): Input array of shape (6,) containing position and velocity vectors.
-        Returns:
-        numpy.ndarray: 2D array of shape (2, 3) where each column contains a position and a velocity vector.
+        for visualization
         """
-        # Split the input array into position and velocity vectors
-        pos = arr[:3]
-        vel = arr[3:]
+        # for orientation it is considered to be zero for now
+        orientation = 0
+        self.t0 += self.MPC._dt
+        self.xx.append(ee_pos_for_MPC)
+        self.xx1.append(x0_array[:,:2])
+        self.u_cl.append(action)
 
-        # Stack the position and velocity vectors into a 2D array
-        pos_vel = arr.reshape(2,3)
+        """
+        End of visualization
+        """
 
-        return pos_vel
 
-class DummyAgent(AgentBase):
-    def __init__(self, env_info, **kwargs):
-        super().__init__(env_info, **kwargs)
-        self.new_start = True
-        self.hold_position = None
 
-    def reset(self):
-        self.new_start = True
-        self.hold_position = None
+        # return action
+        return inverse
+        # return data_array
+    def __del__(self):
+        print("slm slm")
+        v = Visualization(self.t0, self.xx, self.xx1, self.u_cl, self.xs + [0], self.horizon, 0.3)
 
-    def draw_action(self, observation):
-        if self.new_start:
-            self.new_start = False
-            self.hold_position = self.get_joint_pos(observation)
+    def _action_transform(self, action, obs):
 
-        velocity = np.zeros_like(self.hold_position)
-        action = np.vstack([self.hold_position, velocity])
+        joint_pos = self.get_joint_pos(obs)
+        joint_vel = self.get_joint_vel(obs)
+
+        command = world_to_robot(self.MPC.env_info["robot"]["base_frame"][0], action)[0]
+        success, new_joint_pos = inverse_kinematics(self.robot_model, self.robot_data, command)
+        joint_velocities = (new_joint_pos - self.get_joint_pos(obs)) / self.MPC.env_info['dt']
+
+        # if not success:
+        #     self._fail_count += 1
+        #     # new_joint_pos = joint_pos
+
+        action = np.vstack([new_joint_pos, joint_velocities])
         return action
+
+class Visualization():
+    def __init__(self, t0, xx, xx1, u_cl, xs, horizon, robot_dim):
+        self.t0 = t0
+        self.xx = xx
+        self.xx1 = xx1
+        self.u_cl = u_cl
+        self.xs =xs
+        self.horizon = horizon
+        self.robot_dim = robot_dim
+        self.fig = plt.figure(500, figsize=(8, 8))
+        self.ax = self.fig.add_subplot(111)
+
+        self.line_width = 1.5
+        self.fontsize_labels = 14
+        self.x_r_1 = []
+        self.y_r_1 = []
+        self.r = robot_dim/2
+        ang = np.arange(0, 2*np.pi, 0.005)
+        self.xp = self.r*np.cos(ang)
+        self.yp = self.r*np.sin(ang)
+        # fig = plt.figure(500, figsize=(8, 8))
+        # ax = fig.add_subplot(111)
+        patches = []
+
+        self.Draw_MPC_point_stabilization_v1(self.t0, self.xx, self.xx1, self.u_cl, self.xs, self.horizon, self.robot_dim)
+
+
+
+    def Draw_MPC_point_stabilization_v1(self,t, xx, xx1, u_cl, xs, N, rob_diam):
+
+
+        self.line_width = 1.5
+        self.fontsize_labels = 14
+        self.x_r_1 = []
+        self.x_r_1 = []
+        self.r = rob_diam/2
+        ang = np.arange(0, 2*np.pi, 0.005)
+        self.xp = self.r*np.cos(ang)
+        self.yp = self.r*np.sin(ang)
+        # fig = plt.figure(500, figsize=(8, 8))
+        # ax = fig.add_subplot(111)
+        patches = []
+        # Animate the robot motion
+        #
+        # for k in range(len(xx)):
+        #     h_t = 0.14
+        #     w_t = 0.09
+        #     x1 = xs[0]
+        #     y1 = xs[1]
+        #     # th1 = xs[2]
+        #     th1 = 0
+        #
+        #     x1_tri = [x1+h_t*np.cos(th1), x1+(w_t/2)*np.cos((np.pi/2)-th1), x1-(w_t/2)*np.cos((np.pi/2)-th1)]
+        #     y1_tri = [y1+h_t*np.sin(th1), y1-(w_t/2)*np.sin((np.pi/2)-th1), y1+(w_t/2)*np.sin((np.pi/2)-th1)]
+        #     ref_state = Polygon(np.array([x1_tri, y1_tri]).T, True)
+        #     patches.append(ref_state)
+        #     x1 = xx[k][0]
+        #     y1 = xx[k][1]
+        #     # th1 = xx[k,2]
+        #     th1 = 0
+        #     self.x_r_1.append(x1)
+        #     self.x_r_1.append(y1)
+        #     x1_tri = [x1+h_t*np.cos(th1), x1+(w_t/2)*np.cos((np.pi/2)-th1), x1-(w_t/2)*np.cos((np.pi/2)-th1)]
+        #     y1_tri = [y1+h_t*np.sin(th1), y1-(w_t/2)*np.sin((np.pi/2)-th1), y1+(w_t/2)*np.sin((np.pi/2)-th1)]
+        #     exhibited_traj = Line2D(self.x_r_1, self.x_r_1, linewidth=self.line_width, color='r')
+        #     robot_pos = Polygon(np.array([x1_tri, y1_tri]).T, True, facecolor='r')
+        #     robot_circle = Circle((x1, y1), r, fill=False, linestyle='--', color='r')
+        #     ax.add_patch(robot_pos)
+        #     ax.add_patch(robot_circle)
+        #     ax.add_line(exhibited_traj)
+        #     if k < len(xx) - 1:
+        #         ax.plot(xx1[k][0:N, 0], xx1[k][0:N, 1], 'r--*')
+        #     ax.set_xlabel('$x$-position (m)', fontsize=self.fontsize_labels)
+        #     ax.set_ylabel('$y$-position (m)', fontsize=self.fontsize_labels)
+        #     ax.set_xlim([-1, 0])
+        #     ax.set_ylim([-0.5, 0.5])
+        #     ax.set_aspect('equal')
+
+        anim = FuncAnimation(self.fig, self.update, frames=range(len(self.xx)), interval=50)
+        # anim.save('./animation.gif', writer='PillowWriter')
+        # anim = animation.FuncAnimation(fig, animate, interval=100, blit=True)
+        plt.show()
+        # while True:
+        #     try:
+        #         plt.pause(0.1)
+        #     except:
+        #         break
+        #
+# def animate(i):
+#     ax.imshow(frames[i])
+#     return (ax,)
+
+    def update(self, frame):
+        # Clear previous plot contents
+        self.ax.clear()
+        N = self.horizon
+        k = frame
+        h_t = 0.14
+        w_t = 0.09
+        x1 = self.xs[0]
+        y1 = self.xs[1]
+        # th1 = xs[2]
+        th1 = 0
+
+        x1_tri = [x1 + h_t * np.cos(th1), x1 + (w_t / 2) * np.cos((np.pi / 2) - th1),
+                  x1 - (w_t / 2) * np.cos((np.pi / 2) - th1)]
+        y1_tri = [y1 + h_t * np.sin(th1), y1 - (w_t / 2) * np.sin((np.pi / 2) - th1),
+                  y1 + (w_t / 2) * np.sin((np.pi / 2) - th1)]
+        ref_state = Polygon(np.array([x1_tri, y1_tri]).T, True)
+        x1 = self.xx[k][0]
+        y1 = self.xx[k][1]
+        # th1 = xx[k,2]
+        th1 = 0
+        self.x_r_1.append(x1)
+        self.x_r_1.append(y1)
+        x1_tri = [x1 + h_t * np.cos(th1), x1 + (w_t / 2) * np.cos((np.pi / 2) - th1),
+                  x1 - (w_t / 2) * np.cos((np.pi / 2) - th1)]
+        y1_tri = [y1 + h_t * np.sin(th1), y1 - (w_t / 2) * np.sin((np.pi / 2) - th1),
+                  y1 + (w_t / 2) * np.sin((np.pi / 2) - th1)]
+        exhibited_traj = Line2D(self.x_r_1, self.x_r_1, linewidth=self.line_width, color='r')
+        robot_pos = Polygon(np.array([x1_tri, y1_tri]).T, True, facecolor='r')
+        robot_circle = Circle((x1, y1), self.r, fill=False, linestyle='--', color='r')
+        self.ax.add_patch(robot_pos)
+        self.ax.add_patch(robot_circle)
+        self.ax.add_patch(ref_state)
+        # self.ax.add_line(exhibited_traj)
+        if k < len(self.xx) - 1:
+            self.ax.plot(self.xx1[k][0:N, 0], self.xx1[k][0:N, 1], 'r--*')
+        self.ax.set_xlabel('$x$-position (m)', fontsize=self.fontsize_labels)
+        self.ax.set_ylabel('$y$-position (m)', fontsize=self.fontsize_labels)
+        self.ax.set_xlim([-1, 0])
+        self.ax.set_ylim([-0.5, 0.5])
+        self.ax.set_aspect('equal')
+
+        # Set plot title
+        self.ax.set_title(f"Frame {frame}")
+        # plt.show()
